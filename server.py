@@ -1,8 +1,10 @@
+
 import os
 import json
 import uuid
 import websocket
-from flask import Flask, jsonify
+
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
@@ -30,7 +32,6 @@ def connect_and_authenticate():
         timeout=15
     )
 
-    # Application authentication
     result = send_message(
         ws,
         2100,
@@ -41,12 +42,12 @@ def connect_and_authenticate():
     )
 
     if result.get("payloadType") != 2101:
+        ws.close()
         raise RuntimeError(
             "Application authentication failed: "
             + str(result)
         )
 
-    # Get accounts associated with access token
     result = send_message(
         ws,
         2149,
@@ -56,21 +57,23 @@ def connect_and_authenticate():
     )
 
     if result.get("payloadType") != 2150:
+        ws.close()
         raise RuntimeError(
             "Account list request failed: "
             + str(result)
         )
 
     accounts = result.get("payload", {}).get(
-        "ctidTraderAccount", []
+        "ctidTraderAccount",
+        []
     )
 
     if not accounts:
+        ws.close()
         raise RuntimeError("No cTrader accounts found")
 
     account_id = accounts[0]["ctidTraderAccountId"]
 
-    # Authenticate the selected account
     result = send_message(
         ws,
         2102,
@@ -81,6 +84,7 @@ def connect_and_authenticate():
     )
 
     if result.get("payloadType") != 2103:
+        ws.close()
         raise RuntimeError(
             "Account authentication failed: "
             + str(result)
@@ -94,7 +98,7 @@ def home():
     return jsonify({
         "status": "online",
         "service": "ForexBot cTrader Relay",
-        "version": "2.2"
+        "version": "2.3"
     })
 
 
@@ -142,6 +146,44 @@ def account():
                 pass
 
 
+@app.route("/market")
+def market():
+    ws = None
+
+    try:
+        symbol = request.args.get("symbol", "EURUSD")
+
+        ws, account_id = connect_and_authenticate()
+
+        # cTrader symbol lookup will be added after
+        # the connection test is confirmed.
+
+        return jsonify({
+            "success": True,
+            "message": "cTrader connection ready",
+            "account_id": account_id,
+            "symbol": symbol
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": type(e).__name__,
+            "details": str(e)
+        }), 502
+
+    finally:
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
+PY

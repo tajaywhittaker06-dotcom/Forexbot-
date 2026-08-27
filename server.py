@@ -67,7 +67,244 @@ def volume_to_lots(volume):
 
     return volume / CTRADER_VOLUME_PER_LOT
 
+# ============================================================
+# CONFIDENCE RISK
+# ============================================================
 
+MAX_RISK_PERCENT = 4.0
+
+
+def calculate_risk_percent(confidence):
+
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if confidence >= 90:
+        return 4.0
+
+    if confidence >= 80:
+        return 3.0
+
+    if confidence >= 70:
+        return 2.0
+
+    if confidence >= 60:
+        return 1.5
+
+    return 0.0
+# ============================================================
+# CONFIDENCE-BASED RISK
+# ============================================================
+
+MAX_RISK_PERCENT = 4.0
+MIN_CONFIDENCE = 60.0
+CTRADER_VOLUME_STEP = 1000
+CTRADER_MIN_VOLUME = 1000
+
+
+def get_risk_percent(confidence):
+
+    confidence = float(confidence)
+
+    if confidence < 60:
+        return 0.0
+
+    if confidence < 70:
+        return 1.0
+
+    if confidence < 75:
+        return 1.5
+
+    if confidence < 80:
+        return 2.0
+
+    if confidence < 85:
+        return 2.5
+
+    if confidence < 90:
+        return 3.0
+
+    if confidence < 95:
+        return 3.5
+
+    return MAX_RISK_PERCENT
+
+
+def get_account_balance():
+
+    ws = None
+
+    try:
+
+        ws = authenticate()
+
+        result = send_message(
+            ws,
+            2121,
+            {
+                "ctidTraderAccountId": ACCOUNT_ID
+            }
+        )
+
+        if result.get("payloadType") != 2122:
+
+            raise RuntimeError(
+                "Trader account request failed: "
+                + str(result)
+            )
+
+        trader = result.get(
+            "payload",
+            {}
+        )
+
+        balance_raw = trader.get("balance")
+
+        if balance_raw is None:
+
+            raise RuntimeError(
+                "cTrader account balance was not returned"
+            )
+
+        money_digits = int(
+            trader.get(
+                "moneyDigits",
+                2
+            )
+        )
+
+        balance = (
+            float(balance_raw)
+            / (10 ** money_digits)
+        )
+
+        if balance <= 0:
+
+            raise RuntimeError(
+                "Account balance is zero or negative"
+            )
+
+        return balance
+
+    finally:
+
+        if ws:
+
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
+def calculate_risk_volume(
+    balance,
+    confidence,
+    entry_price,
+    stop_loss
+):
+
+    risk_percent = get_risk_percent(
+        confidence
+    )
+
+    if risk_percent <= 0:
+
+        raise ValueError(
+            "Confidence is below the minimum "
+            "60% trading threshold"
+        )
+
+    if entry_price is None:
+
+        raise ValueError(
+            "Entry price is required"
+        )
+
+    if stop_loss is None:
+
+        raise ValueError(
+            "Stop loss is required for risk-based sizing"
+        )
+
+    entry_price = float(entry_price)
+    stop_loss = float(stop_loss)
+
+    stop_distance = abs(
+        entry_price - stop_loss
+    )
+
+    if stop_distance <= 0:
+
+        raise ValueError(
+            "Stop loss must be different from entry price"
+        )
+
+    risk_money = (
+        balance
+        * risk_percent
+        / 100.0
+    )
+
+    # EURUSD with USD account:
+    # approximately $10 per pip for 1 standard lot.
+    #
+    # 1 pip = 0.0001
+    # 1 standard lot = 100,000 EUR
+    pip_distance = (
+        stop_distance / 0.0001
+    )
+
+    if pip_distance <= 0:
+
+        raise ValueError(
+            "Invalid stop-loss distance"
+        )
+
+    dollars_per_pip_per_lot = 10.0
+
+    lots = (
+        risk_money
+        / (
+            pip_distance
+            * dollars_per_pip_per_lot
+        )
+    )
+
+    if lots <= 0:
+
+        raise ValueError(
+            "Calculated lot size is zero"
+        )
+
+    volume = int(
+        lots
+        * CTRADER_VOLUME_PER_LOT
+    )
+
+    # Round down to cTrader volume step.
+    volume = (
+        volume
+        // CTRADER_VOLUME_STEP
+    ) * CTRADER_VOLUME_STEP
+
+    if volume < CTRADER_MIN_VOLUME:
+
+        volume = CTRADER_MIN_VOLUME
+
+    actual_lots = volume_to_lots(
+        volume
+    )
+
+    return {
+        "risk_percent": risk_percent,
+        "risk_money": risk_money,
+        "stop_distance": stop_distance,
+        "pip_distance": pip_distance,
+        "lots": actual_lots,
+        "volume": volume
+    }
 # ============================================================
 # cTRADER MESSAGE HELPER
 # ============================================================
@@ -617,6 +854,12 @@ def trade():
         "take_profit"
     )
 
+    confidence = data.get(
+    "confidence"
+    )
+    
+    if confidence is None:
+    confidence = 0
     # --------------------------------------------------------
     # VALIDATE SIGNAL
     # --------------------------------------------------------

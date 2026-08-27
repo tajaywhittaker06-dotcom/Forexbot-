@@ -9,8 +9,11 @@ from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
+# ============================================================
+# cTRADER SETTINGS
+# ============================================================
+
 CTRADER_HOST = "wss://demo.ctraderapi.com:5036"
-CTRADER_TOKEN_URL = "https://openapi.ctrader.com/apps/token"
 
 CLIENT_ID = os.getenv("CTRADER_CLIENT_ID")
 CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
@@ -20,9 +23,6 @@ ACCOUNT_ID = int(
     os.getenv("CTRADER_ACCOUNT_ID", "0")
 )
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 EXECUTION_ENABLED = (
     os.getenv(
         "CTRADER_EXECUTION_ENABLED",
@@ -30,17 +30,23 @@ EXECUTION_ENABLED = (
     ).lower() == "true"
 )
 
+# ============================================================
+# TELEGRAM SETTINGS
+# ============================================================
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 APPROVAL_TIMEOUT = 120
 
 pending_trades = {}
 
 
 # ============================================================
-# cTRADER MESSAGE
+# cTRADER MESSAGE HELPER
 # ============================================================
 
 def send_message(ws, payload_type, payload):
-
     message = {
         "clientMsgId": str(uuid.uuid4()),
         "payloadType": payload_type,
@@ -49,9 +55,9 @@ def send_message(ws, payload_type, payload):
 
     ws.send(json.dumps(message))
 
-    return json.loads(
-        ws.recv()
-    )
+    response = ws.recv()
+
+    return json.loads(response)
 
 
 # ============================================================
@@ -59,26 +65,6 @@ def send_message(ws, payload_type, payload):
 # ============================================================
 
 def authenticate():
-
-    if not CLIENT_ID:
-        raise RuntimeError(
-            "CTRADER_CLIENT_ID is missing"
-        )
-
-    if not CLIENT_SECRET:
-        raise RuntimeError(
-            "CTRADER_CLIENT_SECRET is missing"
-        )
-
-    if not ACCESS_TOKEN:
-        raise RuntimeError(
-            "CTRADER_ACCESS_TOKEN is missing"
-        )
-
-    if not ACCOUNT_ID:
-        raise RuntimeError(
-            "CTRADER_ACCOUNT_ID is missing"
-        )
 
     ws = websocket.create_connection(
         CTRADER_HOST,
@@ -97,8 +83,6 @@ def authenticate():
 
     if result.get("payloadType") != 2101:
 
-        ws.close()
-
         raise RuntimeError(
             "Application authentication failed: "
             + str(result)
@@ -116,8 +100,6 @@ def authenticate():
 
     if result.get("payloadType") != 2103:
 
-        ws.close()
-
         raise RuntimeError(
             "Account authentication failed: "
             + str(result)
@@ -127,7 +109,7 @@ def authenticate():
 
 
 # ============================================================
-# FIND SYMBOL
+# FIND cTRADER SYMBOL ID
 # ============================================================
 
 def find_symbol_id(ws, symbol):
@@ -148,8 +130,7 @@ def find_symbol_id(ws, symbol):
         )
 
     symbols = (
-        result
-        .get("payload", {})
+        result.get("payload", {})
         .get("symbol", [])
     )
 
@@ -165,10 +146,124 @@ def find_symbol_id(ws, symbol):
 
 
 # ============================================================
-# TELEGRAM
+# MARKET DATA
 # ============================================================
 
-def send_telegram_message(text, buttons=None):
+def get_market_data(symbol, count):
+
+    ws = None
+
+    try:
+
+        ws = authenticate()
+
+        symbol_id = find_symbol_id(
+            ws,
+            symbol
+        )
+
+        result = send_message(
+            ws,
+            2137,
+            {
+                "ctidTraderAccountId": ACCOUNT_ID,
+                "symbolId": symbol_id,
+                "period": "M1",
+                "count": count
+            }
+        )
+
+        if result.get("payloadType") != 2138:
+
+            raise RuntimeError(
+                "Market data request failed: "
+                + str(result)
+            )
+
+        bars = (
+            result.get("payload", {})
+            .get("trendbar", [])
+        )
+
+        candles = []
+
+        for bar in bars:
+
+            low = bar.get("low")
+
+            if low is None:
+                continue
+
+            open_price = bar.get(
+                "open",
+                low
+            )
+
+            close_price = bar.get(
+                "close",
+                low
+            )
+
+            high_price = bar.get(
+                "high",
+                close_price
+            )
+
+            candles.append({
+                "time": bar.get(
+                    "utcTimestampInMinutes",
+                    0
+                ),
+                "open": open_price,
+                "high": high_price,
+                "low": low,
+                "close": close_price,
+                "volume": bar.get(
+                    "volume",
+                    0
+                )
+            })
+
+        if not candles:
+
+            raise RuntimeError(
+                "No candles returned"
+            )
+
+        prices = [
+            candle["close"]
+            for candle in candles
+        ]
+
+        return {
+            "success": True,
+            "account_id": ACCOUNT_ID,
+            "symbol": symbol,
+            "symbol_id": symbol_id,
+            "period": "M1",
+            "count": len(candles),
+            "candles": candles,
+            "prices": prices
+        }
+
+    finally:
+
+        if ws:
+
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
+# ============================================================
+# TELEGRAM MESSAGE
+# ============================================================
+
+def send_telegram_message(
+    text,
+    buttons=None
+):
 
     if not TELEGRAM_BOT_TOKEN:
 
@@ -219,27 +314,6 @@ def send_telegram_message(text, buttons=None):
     return data
 
 
-def answer_callback(callback_id, text):
-
-    if not TELEGRAM_BOT_TOKEN:
-        return
-
-    url = (
-        "https://api.telegram.org/bot"
-        + TELEGRAM_BOT_TOKEN
-        + "/answerCallbackQuery"
-    )
-
-    requests.post(
-        url,
-        json={
-            "callback_query_id": callback_id,
-            "text": text
-        },
-        timeout=15
-    )
-
-
 # ============================================================
 # EXECUTE TRADE
 # ============================================================
@@ -257,6 +331,8 @@ def execute_trade(trade):
             trade["symbol"]
         )
 
+        # BUY = 1
+        # SELL = 2
         if trade["signal"] == "BUY":
 
             trade_side = 1
@@ -275,6 +351,10 @@ def execute_trade(trade):
                 "Volume must be greater than zero"
             )
 
+        # ----------------------------------------------------
+        # MARKET ORDER
+        # ----------------------------------------------------
+
         payload = {
             "ctidTraderAccountId": ACCOUNT_ID,
             "symbolId": symbol_id,
@@ -284,6 +364,26 @@ def execute_trade(trade):
             "label": "ForexBot_v3.2",
             "comment": "Telegram approved demo trade"
         }
+
+        # ----------------------------------------------------
+        # STOP LOSS
+        # ----------------------------------------------------
+
+        if trade.get("stop_loss") is not None:
+
+            payload["stopLoss"] = float(
+                trade["stop_loss"]
+            )
+
+        # ----------------------------------------------------
+        # TAKE PROFIT
+        # ----------------------------------------------------
+
+        if trade.get("take_profit") is not None:
+
+            payload["takeProfit"] = float(
+                trade["take_profit"]
+            )
 
         result = send_message(
             ws,
@@ -313,7 +413,7 @@ def home():
     return jsonify({
         "service": "ForexBot cTrader Relay",
         "status": "online",
-        "version": "3.2",
+        "version": "3.3",
         "execution_enabled": EXECUTION_ENABLED,
         "telegram_enabled": bool(
             TELEGRAM_BOT_TOKEN
@@ -335,7 +435,7 @@ def health():
 
 
 # ============================================================
-# CREDENTIAL STATUS
+# CREDENTIAL CHECK
 # ============================================================
 
 @app.route("/credentials")
@@ -379,11 +479,11 @@ def credentials():
 @app.route("/account")
 def account():
 
-    ws = None
-
     try:
 
         ws = authenticate()
+
+        ws.close()
 
         return jsonify({
             "success": True,
@@ -400,18 +500,9 @@ def account():
             "details": str(e)
         }), 502
 
-    finally:
-
-        if ws:
-
-            try:
-                ws.close()
-            except Exception:
-                pass
-
 
 # ============================================================
-# MARKET DATA
+# MARKET
 # ============================================================
 
 @app.route("/market")
@@ -435,233 +526,24 @@ def market():
 
         return jsonify({
             "success": False,
-            "error": "count must be an integer"
+            "error":
+                "count must be an integer"
         }), 400
 
-    ws = None
+    if count < 1:
+        count = 1
+
+    if count > 1000:
+        count = 1000
 
     try:
 
-        ws = authenticate()
-
-        symbol_id = find_symbol_id(
-            ws,
-            symbol
+        result = get_market_data(
+            symbol,
+            count
         )
 
-        result = send_message(
-            ws,
-            2137,
-            {
-                "ctidTraderAccountId":
-                    ACCOUNT_ID,
-                "symbolId":
-                    symbol_id,
-                "period":
-                    "M1",
-                "count":
-                    count
-            }
-        )
-
-        if result.get("payloadType") != 2138:
-
-            raise RuntimeError(
-                "Market data request failed: "
-                + str(result)
-            )
-
-        payload = result.get(
-            "payload",
-            {}
-        )
-
-        bars = payload.get(
-            "trendbar",
-            []
-        )
-
-        candles = []
-
-        for bar in bars:
-
-            low = bar.get("low")
-
-            if low is None:
-                continue
-
-            open_price = bar.get(
-                "open",
-                low
-            )
-
-            close_price = bar.get(
-                "close",
-                low
-            )
-
-            high_price = bar.get(
-                "high",
-                close_price
-            )
-
-            candles.append({
-                "time":
-                    bar.get(
-                        "utcTimestampInMinutes",
-                        0
-                    ),
-
-                "open":
-                    open_price,
-
-                "high":
-                    high_price,
-
-                "low":
-                    low,
-
-                "close":
-                    close_price,
-
-                "volume":
-                    bar.get(
-                        "volume",
-                        0
-                    )
-            })
-
-        if not candles:
-
-            raise RuntimeError(
-                "No candles returned"
-            )
-
-        prices = [
-            candle["close"]
-            for candle in candles
-        ]
-
-        return jsonify({
-            "success": True,
-            "account_id": ACCOUNT_ID,
-            "symbol": symbol,
-            "symbol_id": symbol_id,
-            "period": "M1",
-            "count": len(candles),
-            "candles": candles,
-            "prices": prices
-        })
-
-    except Exception as e:
-
-        return jsonify({
-            "success": False,
-            "error": type(e).__name__,
-            "details": str(e)
-        }), 502
-
-    finally:
-
-        if ws:
-
-            try:
-                ws.close()
-            except Exception:
-                pass
-
-
-# ============================================================
-# EXCHANGE cTRADER AUTHORIZATION CODE
-# ============================================================
-
-@app.route("/exchange-code", methods=["POST"])
-def exchange_code():
-
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    code = data.get("code")
-
-    if not code:
-
-        return jsonify({
-            "success": False,
-            "error":
-                "Authorization code is required"
-        }), 400
-
-    if not CLIENT_ID:
-
-        return jsonify({
-            "success": False,
-            "error":
-                "CTRADER_CLIENT_ID is missing"
-        }), 500
-
-    if not CLIENT_SECRET:
-
-        return jsonify({
-            "success": False,
-            "error":
-                "CTRADER_CLIENT_SECRET is missing"
-        }), 500
-
-    try:
-
-        response = requests.post(
-
-            CTRADER_TOKEN_URL,
-
-            data={
-                "grant_type":
-                    "authorization_code",
-
-                "code":
-                    code,
-
-                "redirect_uri":
-                    "http://127.0.0.1:8080/callback",
-
-                "client_id":
-                    CLIENT_ID,
-
-                "client_secret":
-                    CLIENT_SECRET
-            },
-
-            timeout=15
-        )
-
-        try:
-
-            result = response.json()
-
-        except Exception:
-
-            result = {
-                "raw_response":
-                    response.text
-            }
-
-        if not response.ok:
-
-            return jsonify({
-                "success": False,
-                "status_code":
-                    response.status_code,
-                "token_response":
-                    result
-            }), 502
-
-        return jsonify({
-            "success": True,
-            "message":
-                "Authorization code exchanged successfully",
-            "token_response":
-                result
-        })
+        return jsonify(result)
 
     except Exception as e:
 
@@ -676,7 +558,10 @@ def exchange_code():
 # TRADE REQUEST
 # ============================================================
 
-@app.route("/trade", methods=["POST"])
+@app.route(
+    "/trade",
+    methods=["POST"]
+)
 def trade():
 
     data = request.get_json(
@@ -704,6 +589,10 @@ def trade():
         "take_profit"
     )
 
+    # --------------------------------------------------------
+    # VALIDATE SIGNAL
+    # --------------------------------------------------------
+
     if signal not in (
         "BUY",
         "SELL"
@@ -715,6 +604,10 @@ def trade():
                 "Signal must be BUY or SELL"
         }), 400
 
+    # --------------------------------------------------------
+    # VALIDATE VOLUME
+    # --------------------------------------------------------
+
     if volume is None:
 
         return jsonify({
@@ -723,6 +616,30 @@ def trade():
                 "Volume is required"
         }), 400
 
+    try:
+
+        volume = int(volume)
+
+    except (TypeError, ValueError):
+
+        return jsonify({
+            "success": False,
+            "error":
+                "Volume must be an integer"
+        }), 400
+
+    if volume <= 0:
+
+        return jsonify({
+            "success": False,
+            "error":
+                "Volume must be greater than zero"
+        }), 400
+
+    # --------------------------------------------------------
+    # EXECUTION CHECK
+    # --------------------------------------------------------
+
     if not EXECUTION_ENABLED:
 
         return jsonify({
@@ -730,25 +647,27 @@ def trade():
             "status": "READY",
             "message":
                 "Execution is disabled.",
-            "execution_enabled":
-                False
+            "execution_enabled": False
         })
 
-    if not TELEGRAM_BOT_TOKEN:
+    # --------------------------------------------------------
+    # TELEGRAM CHECK
+    # --------------------------------------------------------
+
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_ID
+    ):
 
         return jsonify({
             "success": False,
             "error":
-                "Telegram bot token is missing"
+                "Telegram approval system is not configured"
         }), 500
 
-    if not TELEGRAM_CHAT_ID:
-
-        return jsonify({
-            "success": False,
-            "error":
-                "Telegram chat ID is missing"
-        }), 500
+    # --------------------------------------------------------
+    # CREATE REQUEST
+    # --------------------------------------------------------
 
     request_id = str(
         uuid.uuid4()
@@ -756,24 +675,22 @@ def trade():
 
     pending_trades[request_id] = {
 
-        "symbol":
-            symbol,
+        "symbol": symbol,
 
-        "signal":
-            signal,
+        "signal": signal,
 
-        "volume":
-            volume,
+        "volume": volume,
 
-        "stop_loss":
-            stop_loss,
+        "stop_loss": stop_loss,
 
-        "take_profit":
-            take_profit,
+        "take_profit": take_profit,
 
-        "created":
-            time.time()
+        "created": time.time()
     }
+
+    # --------------------------------------------------------
+    # TELEGRAM NOTIFICATION
+    # --------------------------------------------------------
 
     text = (
 
@@ -785,9 +702,13 @@ def trade():
 
         f"Volume: {volume}\n"
 
+        f"Lot Size: {volume / 100000:.2f}\n"
+
         f"Stop Loss: {stop_loss}\n"
 
         f"Take Profit: {take_profit}\n\n"
+
+        f"Request: {request_id}\n\n"
 
         "Approve this demo trade?"
     )
@@ -795,17 +716,13 @@ def trade():
     buttons = [
 
         {
-            "text":
-                "✅ APPROVE",
-
+            "text": "✅ APPROVE",
             "callback_data":
                 "approve:" + request_id
         },
 
         {
-            "text":
-                "❌ REJECT",
-
+            "text": "❌ REJECT",
             "callback_data":
                 "reject:" + request_id
         }
@@ -819,11 +736,15 @@ def trade():
         )
 
         return jsonify({
+
             "success": True,
+
             "status":
                 "PENDING_APPROVAL",
+
             "message":
                 "Telegram approval requested",
+
             "request_id":
                 request_id
         })
@@ -836,9 +757,14 @@ def trade():
         )
 
         return jsonify({
+
             "success": False,
-            "error": type(e).__name__,
-            "details": str(e)
+
+            "error":
+                type(e).__name__,
+
+            "details":
+                str(e)
         }), 502
 
 
@@ -846,7 +772,10 @@ def trade():
 # TELEGRAM WEBHOOK
 # ============================================================
 
-@app.route("/telegram", methods=["POST"])
+@app.route(
+    "/telegram",
+    methods=["POST"]
+)
 def telegram():
 
     update = request.get_json(
@@ -857,6 +786,7 @@ def telegram():
         "callback_query"
     )
 
+    # Normal Telegram messages
     if not callback:
 
         return jsonify({
@@ -879,27 +809,41 @@ def telegram():
 
     callback_chat = str(
 
-        callback_message
-        .get("chat", {})
-        .get("id", "")
+        callback_message.get(
+            "chat",
+            {}
+        ).get(
+            "id",
+            ""
+        )
     )
+
+    # --------------------------------------------------------
+    # SECURITY CHECK
+    # --------------------------------------------------------
 
     if callback_chat != str(
         TELEGRAM_CHAT_ID
     ):
 
         return jsonify({
+
             "success": False,
+
             "error":
                 "Unauthorized Telegram chat"
+
         }), 403
 
     if ":" not in callback_data:
 
         return jsonify({
+
             "success": False,
+
             "error":
                 "Invalid callback"
+
         }), 400
 
     action, request_id = (
@@ -916,15 +860,23 @@ def telegram():
     if not trade:
 
         answer_callback(
+
             callback_id,
+
             "Trade request no longer exists."
         )
 
         return jsonify({
+
             "success": True,
+
             "message":
                 "Trade request no longer exists"
         })
+
+    # --------------------------------------------------------
+    # TIMEOUT
+    # --------------------------------------------------------
 
     if (
         time.time()
@@ -938,15 +890,28 @@ def telegram():
         )
 
         answer_callback(
+
             callback_id,
+
             "Trade request expired."
+        )
+
+        send_telegram_message(
+
+            "⏱️ TRADE REQUEST EXPIRED\n\n"
+
+            f"{trade['symbol']} "
+            f"{trade['signal']}"
         )
 
         return jsonify({
             "success": True,
-            "status":
-                "EXPIRED"
+            "status": "EXPIRED"
         })
+
+    # --------------------------------------------------------
+    # REJECT
+    # --------------------------------------------------------
 
     if action == "reject":
 
@@ -956,7 +921,9 @@ def telegram():
         )
 
         answer_callback(
+
             callback_id,
+
             "Trade rejected."
         )
 
@@ -965,14 +932,23 @@ def telegram():
             "❌ TRADE REJECTED\n\n"
 
             f"{trade['symbol']} "
-            f"{trade['signal']}"
+            f"{trade['signal']}\n"
+
+            f"Volume: "
+            f"{trade['volume']}"
         )
 
         return jsonify({
+
             "success": True,
+
             "status":
                 "REJECTED"
         })
+
+    # --------------------------------------------------------
+    # APPROVE
+    # --------------------------------------------------------
 
     if action == "approve":
 
@@ -988,8 +964,10 @@ def telegram():
             )
 
             answer_callback(
+
                 callback_id,
-                "Trade submitted to cTrader."
+
+                "Trade approved and submitted."
             )
 
             send_telegram_message(
@@ -1000,7 +978,16 @@ def telegram():
                 f"{trade['signal']}\n"
 
                 f"Volume: "
-                f"{trade['volume']}\n\n"
+                f"{trade['volume']}\n"
+
+                f"Lot Size: "
+                f"{trade['volume'] / 100000:.2f}\n\n"
+
+                f"Stop Loss: "
+                f"{trade['stop_loss']}\n"
+
+                f"Take Profit: "
+                f"{trade['take_profit']}\n\n"
 
                 "cTrader response:\n"
 
@@ -1009,8 +996,7 @@ def telegram():
 
             return jsonify({
 
-                "success":
-                    True,
+                "success": True,
 
                 "status":
                     "EXECUTED",
@@ -1022,7 +1008,9 @@ def telegram():
         except Exception as e:
 
             answer_callback(
+
                 callback_id,
+
                 "Trade execution failed."
             )
 
@@ -1033,7 +1021,9 @@ def telegram():
                     "⚠️ TRADE EXECUTION FAILED\n\n"
 
                     + type(e).__name__
+
                     + ": "
+
                     + str(e)
                 )
 
@@ -1042,8 +1032,7 @@ def telegram():
 
             return jsonify({
 
-                "success":
-                    False,
+                "success": False,
 
                 "status":
                     "EXECUTION_FAILED",
@@ -1053,13 +1042,65 @@ def telegram():
 
                 "details":
                     str(e)
+
             }), 502
 
+    # --------------------------------------------------------
+    # UNKNOWN ACTION
+    # --------------------------------------------------------
+
     return jsonify({
+
         "success": False,
+
         "error":
             "Unknown action"
+
     }), 400
+
+
+# ============================================================
+# TELEGRAM CALLBACK ANSWER
+# ============================================================
+
+def answer_callback(
+    callback_id,
+    text
+):
+
+    if not TELEGRAM_BOT_TOKEN:
+        return
+
+    url = (
+
+        "https://api.telegram.org/bot"
+
+        + TELEGRAM_BOT_TOKEN
+
+        + "/answerCallbackQuery"
+    )
+
+    try:
+
+        requests.post(
+
+            url,
+
+            json={
+
+                "callback_query_id":
+                    callback_id,
+
+                "text":
+                    text
+
+            },
+
+            timeout=15
+        )
+
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -1069,6 +1110,7 @@ def telegram():
 if __name__ == "__main__":
 
     port = int(
+
         os.getenv(
             "PORT",
             "10000"
@@ -1076,6 +1118,8 @@ if __name__ == "__main__":
     )
 
     app.run(
+
         host="0.0.0.0",
+
         port=port
     )

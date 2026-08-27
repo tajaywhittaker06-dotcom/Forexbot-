@@ -14,6 +14,8 @@ CLIENT_SECRET = os.getenv("CTRADER_CLIENT_SECRET")
 ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
 ACCOUNT_ID = int(os.getenv("CTRADER_ACCOUNT_ID", "0"))
 
+PRICE_SCALE = 100000
+
 
 def send_message(ws, payload_type, payload):
     message = {
@@ -47,7 +49,8 @@ def get_market_data(symbol, count):
 
         if result.get("payloadType") != 2101:
             raise RuntimeError(
-                "Application authentication failed"
+                "Application authentication failed: "
+                + str(result)
             )
 
         # Account authentication
@@ -62,7 +65,8 @@ def get_market_data(symbol, count):
 
         if result.get("payloadType") != 2103:
             raise RuntimeError(
-                "Account authentication failed"
+                "Account authentication failed: "
+                + str(result)
             )
 
         # Get symbol information
@@ -76,7 +80,8 @@ def get_market_data(symbol, count):
 
         if result.get("payloadType") != 2115:
             raise RuntimeError(
-                "Symbol request failed"
+                "Symbol request failed: "
+                + str(result)
             )
 
         symbols = result.get(
@@ -151,11 +156,21 @@ def get_market_data(symbol, count):
                 close_price
             )
 
+            # cTrader trendbar prices are relative/integer
+            # values and need to be converted to EURUSD prices.
+            open_price = open_price / PRICE_SCALE
+            high_price = high_price / PRICE_SCALE
+            low_price = low / PRICE_SCALE
+            close_price = close_price / PRICE_SCALE
+
             candles.append({
-                "time": bar.get("utcTimestampInMinutes", 0),
+                "time": bar.get(
+                    "utcTimestampInMinutes",
+                    0
+                ),
                 "open": open_price,
                 "high": high_price,
-                "low": low,
+                "low": low_price,
                 "close": close_price,
                 "volume": bar.get(
                     "volume",
@@ -200,7 +215,7 @@ def home():
     return jsonify({
         "service": "ForexBot cTrader Relay",
         "status": "online",
-        "version": "2.6"
+        "version": "2.7"
     })
 
 
@@ -241,12 +256,27 @@ def market():
         "EURUSD"
     )
 
-    count = int(
-        request.args.get(
-            "count",
-            "250"
+    try:
+        count = int(
+            request.args.get(
+                "count",
+                "250"
+            )
         )
-    )
+    except ValueError:
+        return jsonify({
+            "success": False,
+            "error": "count must be an integer"
+        }), 400
+
+    if count < 1:
+        return jsonify({
+            "success": False,
+            "error": "count must be greater than 0"
+        }), 400
+
+    if count > 500:
+        count = 500
 
     try:
 
@@ -300,6 +330,8 @@ def trade():
             "error": "Volume is required"
         }), 400
 
+    # Execution remains disabled for now.
+    # This endpoint only validates the request.
     return jsonify({
         "success": True,
         "status": "READY",
@@ -326,4 +358,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-    )
+        )

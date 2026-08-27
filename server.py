@@ -62,7 +62,7 @@ def connect():
     # 2. Request accounts belonging to this access token
     accounts = send_message(
         ws,
-        2140,
+        2149,
         {
             "accessToken": ACCESS_TOKEN
         }

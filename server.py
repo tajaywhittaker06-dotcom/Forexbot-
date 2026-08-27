@@ -1,6 +1,4 @@
 import os
-import json
-import time
 import uuid
 import requests
 from flask import Flask, jsonify
@@ -17,8 +15,8 @@ ACCESS_TOKEN = os.getenv("CTRADER_ACCESS_TOKEN")
 @app.route("/")
 def home():
     return jsonify({
-        "service": "ForexBot cTrader Relay",
         "status": "online",
+        "service": "ForexBot cTrader Relay",
         "version": "1.1"
     })
 
@@ -35,6 +33,27 @@ def credentials():
     return jsonify({
         "client_id_loaded": bool(CLIENT_ID),
         "client_secret_loaded": bool(CLIENT_SECRET),
+        "access_token_loaded": bool(ACCESS_TOKEN)
+    })
+
+
+@app.route("/account")
+def account():
+    if not CLIENT_ID or not CLIENT_SECRET or not ACCESS_TOKEN:
+        return jsonify({
+            "success": False,
+            "error": "Missing cTrader credentials"
+        }), 500
+
+    return jsonify({
+        "success": True,
+        "message": "Credentials are loaded. cTrader account test endpoint is ready."
+    })
+
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)        "client_secret_loaded": bool(CLIENT_SECRET),
         "access_token_loaded": bool(ACCESS_TOKEN)
     })
 

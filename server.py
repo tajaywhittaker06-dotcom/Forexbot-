@@ -2,7 +2,6 @@ import os
 import json
 import uuid
 import websocket
-
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -22,28 +21,17 @@ def send_message(ws, payload_type, payload):
     }
 
     ws.send(json.dumps(message))
-    response = ws.recv()
-
-    return json.loads(response)
+    return json.loads(ws.recv())
 
 
-def connect():
-    if not CLIENT_ID:
-        raise RuntimeError("CTRADER_CLIENT_ID is missing")
-
-    if not CLIENT_SECRET:
-        raise RuntimeError("CTRADER_CLIENT_SECRET is missing")
-
-    if not ACCESS_TOKEN:
-        raise RuntimeError("CTRADER_ACCESS_TOKEN is missing")
-
+def connect_and_authenticate():
     ws = websocket.create_connection(
         CTRADER_HOST,
         timeout=15
     )
 
-    # 1. Authenticate the application
-    app_auth = send_message(
+    # Application authentication
+    result = send_message(
         ws,
         2100,
         {
@@ -52,15 +40,14 @@ def connect():
         }
     )
 
-    if app_auth.get("payload", {}).get("errorCode"):
-        ws.close()
+    if result.get("payloadType") != 2101:
         raise RuntimeError(
             "Application authentication failed: "
-            + str(app_auth)
+            + str(result)
         )
 
-    # 2. Request accounts belonging to this access token
-    accounts = send_message(
+    # Get accounts associated with access token
+    result = send_message(
         ws,
         2149,
         {
@@ -68,7 +55,38 @@ def connect():
         }
     )
 
-    return ws, accounts
+    if result.get("payloadType") != 2150:
+        raise RuntimeError(
+            "Account list request failed: "
+            + str(result)
+        )
+
+    accounts = result.get("payload", {}).get(
+        "ctidTraderAccount", []
+    )
+
+    if not accounts:
+        raise RuntimeError("No cTrader accounts found")
+
+    account_id = accounts[0]["ctidTraderAccountId"]
+
+    # Authenticate the selected account
+    result = send_message(
+        ws,
+        2102,
+        {
+            "ctidTraderAccountId": account_id,
+            "accessToken": ACCESS_TOKEN
+        }
+    )
+
+    if result.get("payloadType") != 2103:
+        raise RuntimeError(
+            "Account authentication failed: "
+            + str(result)
+        )
+
+    return ws, account_id
 
 
 @app.route("/")
@@ -76,7 +94,7 @@ def home():
     return jsonify({
         "status": "online",
         "service": "ForexBot cTrader Relay",
-        "version": "2.1"
+        "version": "2.2"
     })
 
 
@@ -101,47 +119,12 @@ def account():
     ws = None
 
     try:
-        ws, result = connect()
-
-        payload = result.get("payload", {})
-
-        if result.get("payloadType") != 2141:
-            return jsonify({
-                "success": False,
-                "stage": "account_list",
-                "ctrader_response": result
-            }), 502
-
-        accounts = payload.get("ctidTraderAccount")
-
-        if not accounts:
-            return jsonify({
-                "success": False,
-                "message": "No cTrader accounts were returned.",
-                "ctrader_response": result
-            }), 502
-
-        # Only return safe account information.
-        safe_accounts = []
-
-        for account in accounts:
-            safe_accounts.append({
-                "ctidTraderAccountId": account.get(
-                    "ctidTraderAccountId"
-                ),
-                "isLive": account.get("isLive"),
-                "brokerTitleShort": account.get(
-                    "brokerTitleShort"
-                ),
-                "traderLogin": account.get(
-                    "traderLogin"
-                )
-            })
+        ws, account_id = connect_and_authenticate()
 
         return jsonify({
             "success": True,
-            "message": "cTrader accounts found",
-            "accounts": safe_accounts
+            "message": "cTrader account authenticated",
+            "account_id": account_id
         })
 
     except Exception as e:
@@ -161,7 +144,4 @@ def account():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
+    app.run(host="0.0.0.0", port=port)

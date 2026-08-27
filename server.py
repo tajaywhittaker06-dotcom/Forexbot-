@@ -39,7 +39,33 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 APPROVAL_TIMEOUT = 120
 
+# cTrader volume mapping for this EURUSD account:
+# 100000 cTrader units = 0.01 lot
+# 1000000 cTrader units = 0.10 lot
+# 10000000 cTrader units = 1.00 lot
+CTRADER_VOLUME_PER_LOT = 10000000
+
 pending_trades = {}
+
+
+# ============================================================
+# LOT SIZE HELPER
+# ============================================================
+
+def volume_to_lots(volume):
+    """
+    Convert cTrader volume units to displayed lot size.
+
+    For this account:
+    100000 units = 0.01 lot
+    """
+
+    try:
+        volume = int(volume)
+    except (TypeError, ValueError):
+        return 0.0
+
+    return volume / CTRADER_VOLUME_PER_LOT
 
 
 # ============================================================
@@ -47,6 +73,7 @@ pending_trades = {}
 # ============================================================
 
 def send_message(ws, payload_type, payload):
+
     message = {
         "clientMsgId": str(uuid.uuid4()),
         "payloadType": payload_type,
@@ -333,6 +360,7 @@ def execute_trade(trade):
 
         # BUY = 1
         # SELL = 2
+
         if trade["signal"] == "BUY":
 
             trade_side = 1
@@ -689,6 +717,14 @@ def trade():
     }
 
     # --------------------------------------------------------
+    # CALCULATE LOT SIZE
+    # --------------------------------------------------------
+
+    lot_size = volume_to_lots(
+        volume
+    )
+
+    # --------------------------------------------------------
     # TELEGRAM NOTIFICATION
     # --------------------------------------------------------
 
@@ -702,7 +738,7 @@ def trade():
 
         f"Volume: {volume}\n"
 
-        f"Lot Size: {volume / 100000:.2f}\n"
+        f"Lot Size: {lot_size:.2f}\n"
 
         f"Stop Loss: {stop_loss}\n"
 
@@ -746,7 +782,13 @@ def trade():
                 "Telegram approval requested",
 
             "request_id":
-                request_id
+                request_id,
+
+            "volume":
+                volume,
+
+            "lot_size":
+                lot_size
         })
 
     except Exception as e:
@@ -935,7 +977,10 @@ def telegram():
             f"{trade['signal']}\n"
 
             f"Volume: "
-            f"{trade['volume']}"
+            f"{trade['volume']}\n"
+
+            f"Lot Size: "
+            f"{volume_to_lots(trade['volume']):.2f}"
         )
 
         return jsonify({
@@ -981,7 +1026,7 @@ def telegram():
                 f"{trade['volume']}\n"
 
                 f"Lot Size: "
-                f"{trade['volume'] / 100000:.2f}\n\n"
+                f"{volume_to_lots(trade['volume']):.2f}\n\n"
 
                 f"Stop Loss: "
                 f"{trade['stop_loss']}\n"
@@ -1122,4 +1167,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
 
         port=port
-    )
+            )

@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import websocket
+
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -21,12 +22,12 @@ def send_message(ws, payload_type, payload):
     }
 
     ws.send(json.dumps(message))
-
     response = ws.recv()
+
     return json.loads(response)
 
 
-def connect_ctrader():
+def connect():
     if not CLIENT_ID:
         raise RuntimeError("CTRADER_CLIENT_ID is missing")
 
@@ -41,8 +42,8 @@ def connect_ctrader():
         timeout=15
     )
 
-    # Application authentication
-    app_result = send_message(
+    # 1. Authenticate the application
+    app_auth = send_message(
         ws,
         2100,
         {
@@ -51,23 +52,23 @@ def connect_ctrader():
         }
     )
 
-    if app_result.get("errorCode"):
+    if app_auth.get("payload", {}).get("errorCode"):
         ws.close()
         raise RuntimeError(
             "Application authentication failed: "
-            + str(app_result)
+            + str(app_auth)
         )
 
-    # Account authentication
-    account_result = send_message(
+    # 2. Request accounts belonging to this access token
+    accounts = send_message(
         ws,
-        2102,
+        2140,
         {
             "accessToken": ACCESS_TOKEN
         }
     )
 
-    return ws, account_result
+    return ws, accounts
 
 
 @app.route("/")
@@ -75,7 +76,7 @@ def home():
     return jsonify({
         "status": "online",
         "service": "ForexBot cTrader Relay",
-        "version": "2.0"
+        "version": "2.1"
     })
 
 
@@ -100,12 +101,47 @@ def account():
     ws = None
 
     try:
-        ws, result = connect_ctrader()
+        ws, result = connect()
+
+        payload = result.get("payload", {})
+
+        if result.get("payloadType") != 2141:
+            return jsonify({
+                "success": False,
+                "stage": "account_list",
+                "ctrader_response": result
+            }), 502
+
+        accounts = payload.get("ctidTraderAccount")
+
+        if not accounts:
+            return jsonify({
+                "success": False,
+                "message": "No cTrader accounts were returned.",
+                "ctrader_response": result
+            }), 502
+
+        # Only return safe account information.
+        safe_accounts = []
+
+        for account in accounts:
+            safe_accounts.append({
+                "ctidTraderAccountId": account.get(
+                    "ctidTraderAccountId"
+                ),
+                "isLive": account.get("isLive"),
+                "brokerTitleShort": account.get(
+                    "brokerTitleShort"
+                ),
+                "traderLogin": account.get(
+                    "traderLogin"
+                )
+            })
 
         return jsonify({
             "success": True,
-            "message": "cTrader authentication successful",
-            "ctrader_response": result
+            "message": "cTrader accounts found",
+            "accounts": safe_accounts
         })
 
     except Exception as e:
@@ -125,4 +161,7 @@ def account():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )

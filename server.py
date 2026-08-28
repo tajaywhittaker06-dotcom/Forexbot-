@@ -736,6 +736,44 @@ def credentials():
             EXECUTION_ENABLED
     })
 
+# ============================================================
+# ACCOUNT BALANCE
+# ============================================================
+
+def get_account_balance(ws):
+
+    result = send_message(
+        ws,
+        2120,
+        {
+            "ctidTraderAccountId": ACCOUNT_ID
+        }
+    )
+
+    if result.get("payloadType") != 2121:
+
+        raise RuntimeError(
+            "Account balance request failed: "
+            + str(result)
+        )
+
+    account_data = result.get(
+        "payload",
+        {}
+    )
+
+    balance = account_data.get(
+        "balance"
+    )
+
+    if balance is None:
+
+        raise RuntimeError(
+            "cTrader did not return account balance"
+        )
+
+    return float(balance)
+
 
 # ============================================================
 # ACCOUNT

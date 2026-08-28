@@ -786,13 +786,16 @@ def account():
 
         ws = authenticate()
 
+        balance = get_account_balance(ws)
+
         ws.close()
 
         return jsonify({
             "success": True,
             "message":
                 "cTrader demo account authenticated",
-            "account_id": ACCOUNT_ID
+            "account_id": ACCOUNT_ID,
+            "balance": balance
         })
 
     except Exception as e:

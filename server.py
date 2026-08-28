@@ -757,21 +757,29 @@ def get_account_balance(ws):
             + str(result)
         )
 
-    account_data = result.get(
+    payload = result.get(
         "payload",
         {}
     )
 
-    balance = account_data.get(
+    trader = payload.get(
+        "trader",
+        {}
+    )
+
+    balance = trader.get(
         "balance"
     )
 
     if balance is None:
 
         raise RuntimeError(
-            "cTrader did not return account balance"
+            "cTrader did not return account balance: "
+            + str(result)
         )
 
+    # cTrader balance is returned as an integer
+    # in the account's deposit currency.
     return float(balance)
 
 

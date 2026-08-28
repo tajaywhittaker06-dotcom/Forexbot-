@@ -744,13 +744,13 @@ def get_account_balance(ws):
 
     result = send_message(
         ws,
-        2120,
+        2121,
         {
             "ctidTraderAccountId": ACCOUNT_ID
         }
     )
 
-    if result.get("payloadType") != 2121:
+    if result.get("payloadType") != 2122:
 
         raise RuntimeError(
             "Account balance request failed: "

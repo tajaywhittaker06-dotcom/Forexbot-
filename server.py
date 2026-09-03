@@ -925,37 +925,216 @@ def trade():
         }), 400
 
     # --------------------------------------------------------
-    # VALIDATE VOLUME
-    # --------------------------------------------------------
+# CONFIDENCE-BASED RISK POSITION SIZING
+# --------------------------------------------------------
 
-    if volume is None:
+try:
 
-        return jsonify({
-            "success": False,
-            "error":
-                "Volume is required"
-        }), 400
+    confidence = float(confidence)
 
-    try:
+except (TypeError, ValueError):
 
-        volume = int(volume)
+    confidence = 0.0
 
-    except (TypeError, ValueError):
 
-        return jsonify({
-            "success": False,
-            "error":
-                "Volume must be an integer"
-        }), 400
+risk_percent = calculate_risk_percent(
+    confidence
+)
 
-    if volume <= 0:
+if risk_percent <= 0:
 
-        return jsonify({
-            "success": False,
-            "error":
-                "Volume must be greater than zero"
-        }), 400
+    return jsonify({
+        "success": False,
+        "error":
+            "Confidence too low for trading",
+        "confidence":
+            confidence,
+        "risk_percent":
+            risk_percent
+    }), 400
 
+
+# Stop loss is required for risk-based sizing
+
+if stop_loss is None:
+
+    return jsonify({
+        "success": False,
+        "error":
+            "Stop loss is required for risk-based position sizing"
+    }), 400
+
+
+try:
+
+    stop_loss = float(stop_loss)
+
+except (TypeError, ValueError):
+
+    return jsonify({
+        "success": False,
+        "error":
+            "Stop loss must be a number"
+    }), 400
+
+
+# Get entry price
+
+entry = data.get(
+    "entry"
+)
+
+if entry is None:
+
+    return jsonify({
+        "success": False,
+        "error":
+            "Entry price is required for risk-based position sizing"
+    }), 400
+
+
+try:
+
+    entry = float(entry)
+
+except (TypeError, ValueError):
+
+    return jsonify({
+        "success": False,
+        "error":
+            "Entry price must be a number"
+    }), 400
+
+
+# --------------------------------------------------------
+# GET ACCOUNT BALANCE
+# --------------------------------------------------------
+
+ws = authenticate()
+
+balance = get_account_balance(
+    ws
+)
+
+ws.close()
+
+
+if balance <= 0:
+
+    return jsonify({
+        "success": False,
+        "error":
+            "Invalid account balance"
+    }), 502
+
+
+# --------------------------------------------------------
+# CALCULATE RISK
+# --------------------------------------------------------
+
+risk_amount = (
+    balance
+    * risk_percent
+    / 100.0
+)
+
+
+# EURUSD pip distance
+
+stop_distance_pips = (
+    abs(entry - stop_loss)
+    / 0.0001
+)
+
+
+if stop_distance_pips <= 0:
+
+    return jsonify({
+        "success": False,
+        "error":
+            "Stop loss distance must be greater than zero"
+    }), 400
+
+
+# EURUSD standard lot ≈ $10 per pip
+
+lots = (
+    risk_amount
+    / (
+        stop_distance_pips
+        * 10.0
+    )
+)
+
+
+# Convert lots to cTrader API volume
+
+volume = int(
+    lots
+    * CTRADER_VOLUME_PER_LOT
+)
+
+
+# Round DOWN to 0.01 lot increments
+
+volume = (
+    volume
+    // 100000
+) * 100000
+
+
+# Minimum supported volume for our setup
+
+if volume < 100000:
+
+    volume = 100000
+
+
+# --------------------------------------------------------
+# FINAL RISK CAP
+# --------------------------------------------------------
+
+if risk_percent > MAX_RISK_PERCENT:
+
+    risk_percent = MAX_RISK_PERCENT
+
+
+print(
+    "Confidence:",
+    confidence
+)
+
+print(
+    "Risk:",
+    risk_percent,
+    "%"
+)
+
+print(
+    "Account Balance:",
+    balance
+)
+
+print(
+    "Risk Amount:",
+    risk_amount
+)
+
+print(
+    "Stop Distance:",
+    stop_distance_pips,
+    "pips"
+)
+
+print(
+    "Calculated Lots:",
+    lots
+)
+
+print(
+    "cTrader Volume:",
+    volume
+    )
     # --------------------------------------------------------
     # EXECUTION CHECK
     # --------------------------------------------------------
